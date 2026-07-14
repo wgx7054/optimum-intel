@@ -111,9 +111,10 @@ def infer_task(
                     if any(arch in config.architectures for arch in with_past_arch_list):
                         # VLM Eagle3 models (targeting VLM architectures like Qwen3-VL)
                         # should use image-text-to-text task for proper inputs_embeds/3D position_ids export.
-                        if "Eagle3LlamaForCausalLM" in config.architectures and (
+                        if ("Eagle3LlamaForCausalLM" in config.architectures or
+                            "LlamaForCausalLMEagle3" in config.architectures) and (
                             getattr(config, "modal_type", "") == "VLM"
-                            or getattr(config, "target_model_type", "") in {"qwen2_vl", "qwen3_vl"}
+                            or getattr(config, "target_model_type", "") in {"qwen2_vl", "qwen3_vl", "minicpm_v_4"}
                         ):
                             task = "image-text-to-text"
                         else:

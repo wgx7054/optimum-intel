@@ -640,7 +640,7 @@ class LlamaOpenVINOConfig(TextDecoderWithPositionIdsOpenVINOConfig):
             # inputs_embeds instead of input_ids and 3D MRoPE position_ids.
             target_model_type = getattr(config, "target_model_type", "")
             modal_type = getattr(config, "modal_type", "")
-            if modal_type == "VLM" or target_model_type in {"qwen2_vl", "qwen3_vl"}:
+            if modal_type == "VLM" or target_model_type in {"qwen2_vl", "qwen3_vl", "minicpm_v_4"}:
                 self.eagle3_vlm = True
                 # VLM Eagle3 always needs KV cache for speculative decoding,
                 # regardless of whether the task includes "-with-past".
@@ -663,12 +663,25 @@ class LlamaOpenVINOConfig(TextDecoderWithPositionIdsOpenVINOConfig):
         # Eagle3 model has additional conditional input
         if self.eagle3:
             common_inputs["hidden_states"] = {0: "batch_size", 1: "sequence_length", 2: "hidden_size"}
-        # VLM Eagle3 uses inputs_embeds (not input_ids) and 3D MRoPE position_ids
+        # VLM Eagle3 uses inputs_embeds (not input_ids).
+        # Qwen-VL uses 3D MRoPE position_ids; MiniCPM-V-4 uses standard 2D position_ids.
         if self.eagle3_vlm:
             common_inputs.pop("input_ids", None)
             common_inputs["inputs_embeds"] = {0: "batch_size", 1: "sequence_length", 2: "hidden_size"}
-            common_inputs["position_ids"] = {0: "num_dims", 1: "batch_size", 2: "sequence_length"}
+            target_model_type = getattr(self._config, "target_model_type", "")
+            if target_model_type == "minicpm_v_4":
+                common_inputs["position_ids"] = {0: "batch_size", 1: "sequence_length"}
+            else:
+                common_inputs["position_ids"] = {0: "num_dims", 1: "batch_size", 2: "sequence_length"}
         return common_inputs
+
+    def generate_dummy_inputs(self, framework: str = "pt", **kwargs):
+        if self.eagle3_vlm:
+            kwargs = {
+                **kwargs,
+                "target_model_type": getattr(self._config, "target_model_type", ""),
+            }
+        return super().generate_dummy_inputs(framework=framework, **kwargs)
 
     @property
     def outputs(self) -> Dict[str, Dict[int, str]]:
