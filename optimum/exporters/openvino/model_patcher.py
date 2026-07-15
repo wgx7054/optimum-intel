@@ -98,6 +98,52 @@ if is_transformers_version(">=", "5"):
     from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
 
 
+class Eagle3LongRoPERotaryEmbedding(nn.Module):
+    """
+    Rotary embedding with dynamic long/short factor selection for LongRoPE.
+
+    Uses torch.where (tensor operation) instead of Python ``if`` to ensure
+    both long and short code paths are preserved in the exported OpenVINO
+    graph during torch.jit.trace.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        rope_scaling = getattr(config, "rope_scaling", None) or {}
+
+        self.head_dim = head_dim
+        self.rope_theta = getattr(config, "rope_theta", 10000.0)
+        self.original_max = rope_scaling.get(
+            "original_max_position_embeddings",
+            getattr(config, "max_position_embeddings", 32768),
+        )
+
+        n_factors = head_dim // 2
+        long_factor = rope_scaling.get("long_factor", [1.0] * n_factors)
+        short_factor = rope_scaling.get("short_factor", [1.0] * n_factors)
+
+        self.register_buffer("long_factors", torch.tensor(long_factor, dtype=torch.float32))
+        self.register_buffer("short_factors", torch.tensor(short_factor, dtype=torch.float32))
+
+    def forward(self, x, position_ids=None):
+        if position_ids is None:
+            position_ids = torch.arange(x.shape[-2], dtype=torch.long, device=x.device).unsqueeze(0)
+
+        seq_len = torch.max(position_ids) + 1
+        is_long = seq_len > self.original_max
+
+        ext_factors = torch.where(is_long, self.long_factors, self.short_factors)
+        inv_freq_shape = torch.arange(0, self.head_dim, 2, dtype=torch.int64, device=x.device).float() / self.head_dim
+        inv_freq = 1.0 / (ext_factors * (self.rope_theta ** inv_freq_shape))
+
+        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -8566,6 +8612,8 @@ class LlamaEagle3Model(LlamaPreTrainedModel):
         rope_type = rope_scaling.get("rope_type") or rope_scaling.get("type")
         if rope_type == "mrope" or rope_scaling.get("mrope_section") is not None:
             self.rotary_emb = Qwen3VLTextRotaryEmbedding(config=config)
+        elif rope_type == "longrope":
+            self.rotary_emb = Eagle3LongRoPERotaryEmbedding(config=config)
         else:
             self.rotary_emb = LlamaRotaryEmbedding(config=config)
 
